@@ -208,7 +208,8 @@ def run_surface_glm(dmtx, contrasts, fmri_path, subject_session_output_dir):
     from nibabel.gifti import GiftiDataArray, GiftiImage
     from nilearn.glm.first_level import run_glm as run_glm_nl
     from nilearn.glm import compute_contrast
-    Y = np.array([darrays.data for darrays in load(fmri_path).darrays])
+    # Y = np.array([darrays.data for darrays in load(fmri_path).darrays]) -> this for gifti
+    Y = load(fmri_path).get_fdata()
     labels, res = run_glm_nl(Y, dmtx.values)
     # Estimate the contrasts
     print('Computing contrasts...')
@@ -327,18 +328,27 @@ def first_level(subject_dic, additional_regressors=None, compcorr=False,
 
         task_id = _session_id_to_task_id([session_id])[0]
 
-        if mesh is not False:
+        '''if mesh is not False:
             from nibabel import load
             n_scans = np.array(
                 [darrays.data for darrays in load(fmri_path).darrays]).shape[0]
         else:
+            n_scans = nib.load(fmri_path).shape[3]'''
+        # ---------------------------------------------
+        if mesh is not False:
+            from nibabel import load
+            n_scans = load(fmri_path).get_fdata().shape[0]
+        else:
             n_scans = nib.load(fmri_path).shape[3]
 
-        # motion parameters
+        '''# motion parameters
         if motion_path is not None:
             motion = np.loadtxt(motion_path)
         else:
-            motion = np.random.randn(n_scans, 6) 
+            motion = np.random.randn(n_scans, 6)''' 
+        
+        motion = motion_path
+        # ---------------------------------------------
 
         # define the time stamps for different images
         frametimes = np.linspace(slice_time_ref, (n_scans - 1 + slice_time_ref) * tr, n_scans)
@@ -607,10 +617,12 @@ def fixed_effects_surf(con_imgs, var_imgs):
     from nibabel.gifti import GiftiDataArray, GiftiImage
     con, var = [], []
     for (con_img, var_img) in zip(con_imgs, var_imgs):
-        con.append(np.ravel([
+        '''con.append(np.ravel([
             darrays.data for darrays in load(con_img).darrays]))
         var.append(np.ravel([
-            darrays.data for darrays in load(var_img).darrays]))
+            darrays.data for darrays in load(var_img).darrays]))'''
+        con.append(np.ravel(load(con_img).get_fdata()))
+        var.append(np.ravel(load(var_img).get_fdata()))
 
     outputs = []
     intents = ['NIFTI_INTENT_ESTIMATE', 'NIFTI_INTENT_ESTIMATE', 't test']
