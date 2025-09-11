@@ -238,6 +238,78 @@ def run_surface_glm(dmtx, contrasts, fmri_path, subject_session_output_dir):
             tex.to_filename(map_path)
 
 
+def run_cifti_glm(dmtx, contrasts, fmri_path, subject_session_output_dir):
+    import os
+    import numpy as np
+    import nibabel as nib
+    from nibabel.cifti2 import Cifti2Image, ScalarAxis
+
+    try:
+        from nilearn.glm.regression import run_glm as run_glm_nl
+    except Exception:
+        from nilearn.glm.first_level import run_glm as run_glm_nl
+    try:
+        from nilearn.glm.contrasts import compute_contrast
+    except Exception:
+        from nilearn.glm import compute_contrast
+
+    img = nib.load(fmri_path)  # .dtseries.nii
+    data = img.get_fdata()
+    ax0 = img.header.get_axis(0)
+    ax1 = img.header.get_axis(1)
+    if isinstance(ax0, nib.cifti2.SeriesAxis):
+        bm_axis = ax1
+        Y = data  # (T, G)
+    elif isinstance(ax1, nib.cifti2.SeriesAxis):
+        bm_axis = ax0
+        Y = np.swapaxes(data, 0, 1)  # (T, G)
+    else:
+        raise ValueError("No SeriesAxis in dtseries; cannot determine time axis.")
+    G = bm_axis.size
+
+    X = dmtx.values if hasattr(dmtx, "values") else np.asarray(dmtx)
+    labels, res = run_glm_nl(Y, X)
+
+    print('Computing contrasts...')
+    for idx, contrast_id in enumerate(contrasts):
+        print(f'  Contrast {idx + 1} / {len(contrasts)}: {contrast_id}')
+        con_vec = contrasts[contrast_id]
+        contrast_ = compute_contrast(labels, res, con_vec)
+
+        outputs = [
+            ('z_score_maps', contrast_.z_score()),
+            ('stat_maps', contrast_.stat_),
+            ('effect_size_maps', contrast_.effect),
+            ('effect_variance_maps', contrast_.variance),
+        ]
+
+        for dirname, out_map in outputs:
+            out_dir = os.path.join(subject_session_output_dir, dirname)
+            os.makedirs(out_dir, exist_ok=True)
+
+            arr = np.asarray(out_map, dtype=np.float32)
+            # Expected per-voxel maps: (G,) or (G, K). Reshape to (K, G).
+            if arr.ndim == 1:
+                if arr.size != G:
+                    raise ValueError(f"Unexpected map length {arr.size}; expected {G}")
+                arr = arr.reshape(1, G)
+                labels_axis = ScalarAxis([contrast_id])
+            else:
+                # Try to interpret as (G, K) or flattened (G*K,)
+                if arr.shape[0] == G:
+                    arr = arr.T  # (K, G)
+                elif arr.shape[-1] != G and arr.size % G == 0:
+                    arr = arr.reshape(-1, G)
+                elif arr.shape[-1] != G:
+                    raise ValueError(f"Cannot reshape map with shape {arr.shape} to (*, {G})")
+                K = arr.shape[0]
+                labels_axis = ScalarAxis([f"{contrast_id}_{i+1}" for i in range(K)])
+
+            cifti = Cifti2Image(arr, (labels_axis, bm_axis), img.nifti_header)
+            out_path = os.path.join(out_dir, f"{contrast_id}.dscalar.nii")
+            cifti.to_filename(out_path)
+
+
 def masking(func, output_dir):
     """compute the mask for all sessions"""
     # compute the mask for all sessions
@@ -322,33 +394,51 @@ def first_level(subject_dic, additional_regressors=None, compcorr=False,
         additional_regressors = dict(
             [(session_id, None) for session_id in subject_dic['session_id']])
 
-    for session_id, fmri_path, onset, motion_path in zip(
+    for session_id, fmri_path, onset, motion_input in zip(
             subject_dic['session_id'], subject_dic['func'],
             subject_dic['onset'], subject_dic['realignment_parameters']):
 
         task_id = _session_id_to_task_id([session_id])[0]
 
-        '''if mesh is not False:
-            from nibabel import load
-            n_scans = np.array(
-                [darrays.data for darrays in load(fmri_path).darrays]).shape[0]
+        # -------------------- Load/prepare motion regs --------------------
+        # Determine n_scans robustly (CIFTI SeriesAxis if present)
+        img_ = nib.load(fmri_path)
+        ax0 = img_.header.get_axis(0) if hasattr(img_.header, "get_axis") else None
+        ax1 = img_.header.get_axis(1) if hasattr(img_.header, "get_axis") else None
+        if ax0 is not None and isinstance(ax0, nib.cifti2.SeriesAxis):
+            n_scans = ax0.size
+        elif ax1 is not None and isinstance(ax1, nib.cifti2.SeriesAxis):
+            n_scans = ax1.size
         else:
-            n_scans = nib.load(fmri_path).shape[3]'''
-        # ---------------------------------------------
-        if mesh is not False:
-            from nibabel import load
-            n_scans = load(fmri_path).get_fdata().shape[0]
-        else:
-            n_scans = nib.load(fmri_path).shape[3]
+            # fallback for NIfTI 4D or preloaded arrays
+            shape = img_.shape
+            n_scans = shape[0] if len(shape) == 2 else (shape[3] if len(shape) == 4 else shape[0])
 
-        '''# motion parameters
-        if motion_path is not None:
-            motion = np.loadtxt(motion_path)
+        # Accept either a filepath or a preloaded array
+        if isinstance(motion_input, (str, os.PathLike)):
+            motion = np.loadtxt(motion_input)
         else:
-            motion = np.random.randn(n_scans, 6)''' 
-        
-        motion = motion_path
-        # ---------------------------------------------
+            motion = np.asarray(motion_input)
+
+        # Ensure 2D shape (n_time, n_cols)
+        if motion.ndim == 1:
+            motion = motion.reshape(-1, 1)
+        # Try to infer 6 columns if flat length divisible by 6
+        if motion.ndim == 1 and motion.size % 6 == 0:
+            motion = motion.reshape(-1, 6)
+
+        # Trim/pad to match n_scans. If too long, drop first extra rows (keep last n_scans).
+        if motion.shape[0] > n_scans:
+            motion = motion[-n_scans:, :]
+        elif motion.shape[0] < n_scans:
+            pad = n_scans - motion.shape[0]
+            motion = np.pad(motion, ((pad, 0), (0, 0)), mode='constant', constant_values=0.0)
+
+        motion = motion.astype(np.float32)
+        # start with empty additional regressors; we'll append in a controlled way
+        add_regs = np.empty((n_scans, 0), dtype=np.float32)
+        add_reg_names = []
+        # -----------------------------------------------------------------
 
         # define the time stamps for different images
         frametimes = np.linspace(slice_time_ref, (n_scans - 1 + slice_time_ref) * tr, n_scans)
@@ -385,21 +475,31 @@ def first_level(subject_dic, additional_regressors=None, compcorr=False,
         else:
             confounds = motion
             confound_names = motion_names
-        
+         
         # handle manually supplied regressors
-        add_reg_names = []
-        if additional_regressors[session_id] is None:
-            add_regs = confounds
-        else:
+        if additional_regressors[session_id] is not None:
             df = read_csv(additional_regressors[session_id])
-            add_regs = []
             for regressor in df:
+                vals = np.asarray(df[regressor]).reshape(-1, 1).astype(np.float32)
+                # trim/pad to n_scans if needed
+                if vals.shape[0] > n_scans:
+                    vals = vals[-n_scans:, :]
+                elif vals.shape[0] < n_scans:
+                    pad = n_scans - vals.shape[0]
+                    vals = np.pad(vals, ((pad, 0), (0, 0)), mode='constant', constant_values=0.0)
+                add_regs = np.hstack((add_regs, vals))
                 add_reg_names.append(regressor)
-                add_regs.append(df[regressor])
-            add_regs = np.array(add_regs).T
-            add_regs = np.hstack((add_regs, confounds))
 
+        # finally add confounds once
+        add_regs = np.hstack((add_regs, confounds))
         add_reg_names += confound_names
+
+        # drop zero-variance columns to avoid singularities
+        if add_regs.size:
+            var = add_regs.var(axis=0)
+            keep = var > 1e-12
+            add_regs = add_regs[:, keep]
+            add_reg_names = [n for n, k in zip(add_reg_names, keep) if k]
         
         # create the design matrix
         design_matrix = make_first_level_design_matrix(
@@ -419,14 +519,17 @@ def first_level(subject_dic, additional_regressors=None, compcorr=False,
         np.savez(os.path.join(subject_session_output_dir, 'design_matrix.npz'),
                  design_matrix=design_matrix)
 
-        if mesh is not False:
-            run_surface_glm(
-                design_matrix, contrasts, fmri_path, subject_session_output_dir)
+        # Decide writer based on input
+        # Prefer by file extension: CIFTI > GIFTI > volumetric
+        if fmri_path.endswith('.dtseries.nii'):
+            run_cifti_glm(dmtx, contrasts, fmri_path, subject_session_output_dir)
+        elif fmri_path.endswith('.gii'):
+            run_surface_glm(dmtx, contrasts, fmri_path, subject_session_output_dir)
         else:
-            z_maps, fmri_glm = run_glm(
-                design_matrix, contrasts, fmri_path, mask_img, subject_dic,
-                subject_session_output_dir, tr=tr, slice_time_ref=slice_time_ref,
-                smoothing_fwhm=smooth)
+            # legacy volumetric writer (NIfTI)
+            z_maps, fmri_glm = run_glm(dmtx, contrasts, fmri_path, mask_img,
+                                       subject_dic, subject_session_output_dir, tr, slice_time_ref,
+                                       smoothing_fwhm=smooth)
 
             # do stats report
             anat_img = nib.load(subject_dic['anat'])
@@ -470,16 +573,13 @@ def _session_id_to_task_id(session_ids):
 
 
 def _session_output_dir_from_session_id(session_id, mesh, output_dir):
-    """ Generate output_dir name from session_id.
-    TODO: session -> run
-    """
+    """ Generate output_dir name from session_id. """
     run_, dir_ = _guess_run_and_dir_from_session_id(session_id)
-    task_id = _session_id_to_task_id([session_id])[0]
-    if mesh in ['fsaverage5', 'fsaverage7', 'individual']:
-        # this is low-resolution data
+    task_id = _session_output_dir_from_session_id.__globals__['_session_id_to_task_id']([session_id])[0]  # keep behavior
+    # Treat fsLR like a surface/greyordinates space
+    if mesh in ['fsaverage5', 'fsaverage7', 'individual', 'fsLR']:
         subject_session_output_dir = os.path.join(
-            output_dir,
-            'res_task-%s_space-%s' % (task_id, mesh))
+            output_dir, 'res_task-%s_space-%s' % (task_id, mesh))
     else:
         subject_session_output_dir = os.path.join(
             output_dir, 'res_task-%s_space-MNI152' % task_id)

@@ -3,7 +3,6 @@ import os
 import glob
 import nibabel as nib
 import numpy as np
-import shutil
 from ibc_public.utils_pipeline import first_level
 
 subject = sys.argv[1]
@@ -34,11 +33,13 @@ for session_dir in session_dirs:
         direction = direction[0] if direction else 'unknown'
         run = run[0] if run else None  # None if not present
 
-        # Extract TR for this run
+        # Extract TR from CIFTI SeriesAxis (robust)
         try:
             img = nib.load(func_path)
-            ts_axis = img.header.get_axis(1)
-            tr = getattr(ts_axis, "step", 2.0)
+            ax0 = img.header.get_axis(0)
+            ax1 = img.header.get_axis(1)
+            ts_axis = ax0 if isinstance(ax0, nib.cifti2.SeriesAxis) else ax1
+            tr = float(getattr(ts_axis, "step", 2.0))
         except Exception as e:
             print(f"Could not read TR from {func_path}: {e}")
             tr = 2.0
@@ -70,18 +71,36 @@ for session_dir in session_dirs:
             continue
 
         anat_path = os.path.join(session_dir, 'anat', f'sub-{subject}_{session}_T1w.nii.gz')
-        output_dir = os.path.join(output_base, f'sub-{subject}', session)  # <-- store in session folder
+        output_dir = os.path.join(output_base, f'sub-{subject}', session)  # keep utils' subfolder structure
 
-        # Ensure motion file has the correct number of rows
-        # As I removed the first 5(+1) columns in preprocessing, they have to be cut out from motion file
+        # Ensure motion regressors match n_scans from SeriesAxis
         try:
-            n_scans = img.shape[0]
-            if motion_path is not None:
-                motion = np.loadtxt(motion_path)
+            # Determine number of scans (time points) from SeriesAxis
+            if isinstance(ax0, nib.cifti2.SeriesAxis):
+                n_scans = ax0.size
+            elif isinstance(ax1, nib.cifti2.SeriesAxis):
+                n_scans = ax1.size
             else:
-                motion = np.random.randn(n_scans, 6)
+                n_scans = img.shape[0]
+
+            motion = np.loadtxt(motion_path)
+            # Normalize shape to (n_time, n_cols)
+            if motion.ndim == 1:
+                # try to infer 6 cols, else single column
+                if motion.size % 6 == 0:
+                    motion = motion.reshape(-1, 6)
+                else:
+                    motion = motion.reshape(-1, 1)
+
+            # Trim/pad to match n_scans
             if motion.shape[0] > n_scans:
-                motion = motion[-n_scans:]
+                # remove extra rows at the beginning
+                motion = motion[-n_scans:, :]
+            elif motion.shape[0] < n_scans:
+                pad = n_scans - motion.shape[0]
+                motion = np.pad(motion, ((pad, 0), (0, 0)), mode='constant', constant_values=0.0)
+
+            motion = motion.astype(np.float32)
         except Exception as e:
             print(f"Error processing motion file {motion_path}: {e}")
             continue
@@ -99,37 +118,7 @@ for session_dir in session_dirs:
             'TR': tr
         }
 
-        # Run first level analysis
-        first_level(subject_dic, mesh='individual')
-'''
-        # Rename and move output files
-        for map_type, suffix in [
-            ("z_score_maps", "ZMap"),
-            ("stat_maps", "StatMap"),
-            ("effect_size_maps", "EffectSizeMap"),
-            ("effect_variance_maps", "EffectVarianceMap"),
-        ]:
-            map_dir = os.path.join(output_dir, map_type)
-            if os.path.exists(map_dir):
-                for fname in os.listdir(map_dir):
-                    if fname.endswith(".gii"):
-                        contrast = fname.split("_")[-1].replace(".gii", "")
-                        new_name = (
-                            f"sub-{subject}_{session}_task-{task}{run_part}_space-fsLR_{suffix}-{contrast}.gii"
-                        )
-                        os.rename(
-                            os.path.join(map_dir, fname),
-                            os.path.join(output_dir, new_name)
-                        )
+        # Run first level analysis; utils will detect .dtseries.nii and write CIFTI .dscalar outputs
+        first_level(subject_dic, mesh='fsLR')
 
-        # Move all files from subfolders to session folder and remove subfolders
-        for subfolder in os.listdir(output_dir):
-            subfolder_path = os.path.join(output_dir, subfolder)
-            if os.path.isdir(subfolder_path) and subfolder.startswith("res_"):
-                for file in os.listdir(subfolder_path):
-                    shutil.move(
-                        os.path.join(subfolder_path, file),
-                        os.path.join(output_dir, file)
-                    )
-                shutil.rmtree(subfolder_path)
-'''
+# (No renaming or moving of outputs here; utils handle standard layout)
