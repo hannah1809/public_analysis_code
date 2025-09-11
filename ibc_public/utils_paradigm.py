@@ -620,6 +620,14 @@ def post_process(df, paradigm_id):
 
 def make_paradigm(onset_file, paradigm_id=None):
     """ Temporary fix """
+# if paradigm_id in ['WedgeClock', 'WedgeAnti', 'ContRing', 'ExpRing']:
+#     return None
+# if paradigm_id in ['WedgeClock', 'WedgeAnti', 'ContRing', 'ExpRing']:
+#     return None
+# if paradigm_id in ['WedgeClock', 'WedgeAnti', 'ContRing', 'ExpRing']:
+        #     return None
+    # if paradigm_id in ['WedgeClock', 'WedgeAnti', 'ContRing', 'ExpRing']:
+    #     return None
     # if paradigm_id in ['WedgeClock', 'WedgeAnti', 'ContRing', 'ExpRing']:
     #     return None
     df = read_csv(onset_file, index_col=None, sep='\t', na_values=['NaN'],
@@ -646,5 +654,7 @@ def make_paradigm(onset_file, paradigm_id=None):
         df['trial_type'] = df['name']
         df.drop('name', 1, inplace=True)
     df = post_process(df, paradigm_id)
-    df['name'] = df['trial_type']
+    # Remove 'name' column if present
+    if 'name' in df.columns:
+        df = df.drop(columns=['name'])
     return df
