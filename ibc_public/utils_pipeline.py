@@ -500,6 +500,11 @@ def first_level(subject_dic, additional_regressors=None, compcorr=False,
             keep = var > 1e-12
             add_regs = add_regs[:, keep]
             add_reg_names = [n for n, k in zip(add_reg_names, keep) if k]
+
+        target_len = int(np.size(frametimes))
+        if add_regs.size and add_regs.shape[0] != target_len:
+            print(f"Skipping run {session_id}: add_regs rows {add_regs.shape[0]} != frame_times {target_len}")
+            continue
         
         # create the design matrix
         design_matrix = make_first_level_design_matrix(
@@ -559,7 +564,7 @@ def _session_id_to_task_id(session_ids):
     task_ids = []
     for i, session_id in enumerate(session_ids):
         task_id = session_id.split('_')[0]
-        if task_id[:5] == 'task-':
+        if (task_id[:5] == 'task-'):
             task_id = task_id[5:]
         task_ids.append(task_id)
 
