@@ -6,19 +6,19 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --partition=compute
-#SBATCH --mem-per-cpu=4G
 #SBATCH --mail-type=END,FAIL,TIME_LIMIT
-# #SBATCH --array=0-7 # (subjects-1)
+#SBATCH --array=0-7 # (subjects-1)
 
 export APPTAINER_BIND="/run,/ptmp,/tmp,/opt/ohpc,/home/hmueller2"
 container=/home/rglz/containers/gfae.sif
 
-# SUBJECTS_FILE=/ptmp/hmueller2/Downloads/subjects_resting.txt
-# subject=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" $SUBJECTS_FILE)
+SUBJECTS_FILE=/ptmp/hmueller2/Downloads/subjects_resting.txt
+subject=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" $SUBJECTS_FILE)
 
-subject="09"
+# subject="15"
 
 echo "---- Starting contrast map calculation for subject $subject ----"
 
