@@ -83,23 +83,25 @@ for session_dir in session_dirs:
             else:
                 n_scans = img.shape[0]
 
+            # Load motion and check shape
             motion = np.loadtxt(motion_path)
-            # Normalize shape to (n_time, n_cols)
             if motion.ndim == 1:
-                # try to infer 6 cols, else single column
                 if motion.size % 6 == 0:
                     motion = motion.reshape(-1, 6)
                 else:
                     motion = motion.reshape(-1, 1)
-
-            # Trim/pad to match n_scans
-            if motion.shape[0] > n_scans:
-                # remove extra rows at the beginning
-                motion = motion[-n_scans:, :]
-            elif motion.shape[0] < n_scans:
-                pad = n_scans - motion.shape[0]
-                motion = np.pad(motion, ((pad, 0), (0, 0)), mode='constant', constant_values=0.0)
-
+            diff = motion.shape[0] - n_scans
+            if diff == 0:
+                pass
+            elif abs(diff) == 1:
+                # allow off-by-one, pad or trim
+                if diff == 1:
+                    motion = motion[-n_scans:, :]
+                else:
+                    motion = np.pad(motion, ((1, 0), (0, 0)), mode='constant', constant_values=0.0)
+            else:
+                print(f"Skipping run {session_id}: motion rows {motion.shape[0]} != scans {n_scans}")
+                continue
             motion = motion.astype(np.float32)
         except Exception as e:
             print(f"Error processing motion file {motion_path}: {e}")
