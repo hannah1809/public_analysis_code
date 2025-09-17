@@ -311,7 +311,7 @@ def post_process(df, paradigm_id):
         df3.replace('card_flip', 'num_loss_cards', inplace=True)
         df3['modulation'] = df3['num_loss_cards'].astype(float)
         df = concat([df1, df2, df3], axis=0, ignore_index=True)
-        df.drop('loss_amount', 1, inplace=True)
+        df.drop('loss_amount', axis=1, inplace=True)
         df.drop('num_loss_cards', 1, inplace=True)
         df.drop('gain_amount', 1, inplace=True)
     if paradigm_id == 'DotPatterns':
