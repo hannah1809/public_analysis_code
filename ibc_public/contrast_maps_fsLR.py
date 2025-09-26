@@ -12,13 +12,17 @@ output_base = '/ptmp/hmueller2/Downloads/contrast_maps_fsLR'
 subject_dir = os.path.join(base_dir, f'sub-{subject}')
 session_dirs = sorted(glob.glob(os.path.join(subject_dir, 'ses-*')))
 
+processed = []
+skipped = []
+seen_ids = set()
+
 for session_dir in session_dirs:
     session = os.path.basename(session_dir)
     glm_dir = os.path.join(session_dir, 'postfmriprep', 'GLM')
     if not os.path.exists(glm_dir):
         continue
 
-    func_files = sorted(glob.glob(os.path.join(glm_dir, f'sub-{subject}_{session}_task-*_dir-*_*cleaned.dtseries.nii')))
+    func_files = sorted(glob.glob(os.path.join(glm_dir, f'sub-{subject}_{session}_task-*_dir-*_*cleaned_noscrub.dtseries.nii')))
     if not func_files:
         print(f"No functional files found for {subject} {session}")
         continue
@@ -49,12 +53,16 @@ for session_dir in session_dirs:
             motion_fname = f'sub-{subject}_{session}_task-{task}_dir-{direction}_run-{run}_motion.txt'
             onset_fname = f'sub-{subject}_{session}_task-{task}_dir-{direction}_run-{run}_events.tsv'
             session_id = f'task-{task}_run-{run}_dir-{direction}'
-            run_part = f"_run-{run}"
         else:
             motion_fname = f'sub-{subject}_{session}_task-{task}_dir-{direction}_motion.txt'
             onset_fname = f'sub-{subject}_{session}_task-{task}_dir-{direction}_events.tsv'
             session_id = f'task-{task}_dir-{direction}'
-            run_part = ""
+
+        dedup_key = (session_id, os.path.basename(func_path))
+        if dedup_key in seen_ids:
+            skipped.append((session_id, "duplicate_run"))
+            continue
+        seen_ids.add(dedup_key)
 
         # Motion file path
         motion_path = os.path.join(session_dir, 'postfmriprep', 'regressors', motion_fname)
@@ -68,6 +76,7 @@ for session_dir in session_dirs:
 
         if not onset_path or not motion_path:
             print(f"Skipping run {session_id} for subject {subject} due to missing files.")
+            skipped.append((session_id, "missing_motion_or_events"))
             continue
 
         anat_path = os.path.join(session_dir, 'anat', f'sub-{subject}_{session}_T1w.nii.gz')
@@ -99,12 +108,23 @@ for session_dir in session_dirs:
                     motion = motion[-n_scans:, :]
                 else:
                     motion = np.pad(motion, ((1, 0), (0, 0)), mode='constant', constant_values=0.0)
+            elif abs(diff) <= 5:
+                # New: tolerate small mismatches (e.g. missing initial discarded volumes)
+                if diff > 0:
+                    # Trim extra rows from start
+                    motion = motion[diff:, :]
+                else:
+                    # Pad at start with zeros
+                    motion = np.pad(motion, ((abs(diff), 0), (0, 0)), mode='constant', constant_values=0.0)
+                print(f"Adjusted motion length for {session_id}: original {motion.shape[0]-diff} -> {motion.shape[0]} (target {n_scans})")
             else:
-                print(f"Skipping run {session_id}: motion rows {motion.shape[0]} != scans {n_scans}")
+                print(f"Skipping run {session_id}: motion rows {motion.shape[0]} != scans {n_scans} (diff {diff})")
+                skipped.append((session_id, f"motion_len_mismatch_{motion.shape[0]}_{n_scans}"))
                 continue
             motion = motion.astype(np.float32)
         except Exception as e:
             print(f"Error processing motion file {motion_path}: {e}")
+            skipped.append((session_id, "motion_processing_error"))
             continue
 
         subject_dic = {
@@ -120,7 +140,23 @@ for session_dir in session_dirs:
             'TR': tr
         }
 
-        # Run first level analysis; utils will detect .dtseries.nii and write CIFTI .dscalar outputs
-        first_level(subject_dic, mesh='fsLR')
+        try:
+            first_level(subject_dic, mesh='fsLR')
+            processed.append(session_id)
+        except Exception as e:
+            print(f"Run {session_id} failed: {e}")
+            skipped.append((session_id, "first_level_exception"))
 
+# Summary
+print(f"Subject {subject} summary:")
+print(f"  Processed runs: {len(processed)}")
+print(f"  Skipped runs  : {len(skipped)}")
+if skipped:
+    by_reason = {}
+    for sid, reason in skipped:
+        by_reason.setdefault(reason, 0)
+        by_reason[reason] += 1
+    print("  Skip reasons:")
+    for r, c in sorted(by_reason.items(), key=lambda x: (-x[1], x[0])):
+        print(f"    {r}: {c}")
 # (No renaming or moving of outputs here; utils handle standard layout)
