@@ -282,13 +282,13 @@ def post_process(df, paradigm_id):
         df = df[df.trial_type.isin(['stim'])]
         df1 = df.copy()
         df1['modulation'] = df1['large_amount'].astype(float)
-        df1.drop('later_delay', 1, inplace=True)
-        df1.drop('large_amount', 1, inplace=True)
+        df1.drop('later_delay', axis=1, inplace=True)
+        df1.drop('large_amount', axis=1, inplace=True)
         df1.replace('stim', 'amount', inplace=True)
         df2 = df.copy()
         df2['modulation'] = df2['later_delay'].astype(float)
-        df2.drop('large_amount', 1, inplace=True)
-        df2.drop('later_delay', 1, inplace=True)
+        df2.drop('large_amount', axis=1, inplace=True)
+        df2.drop('later_delay', axis=1, inplace=True)
         df2.replace('stim', 'delay', inplace=True)
         df = concat([df1, df2], axis=0, ignore_index=True)
     if paradigm_id == 'SelectiveStopSignal':
@@ -312,8 +312,8 @@ def post_process(df, paradigm_id):
         df3['modulation'] = df3['num_loss_cards'].astype(float)
         df = concat([df1, df2, df3], axis=0, ignore_index=True)
         df.drop('loss_amount', axis=1, inplace=True)
-        df.drop('num_loss_cards', 1, inplace=True)
-        df.drop('gain_amount', 1, inplace=True)
+        df.drop('num_loss_cards', axis=1, inplace=True)
+        df.drop('gain_amount', axis=1, inplace=True)
     if paradigm_id == 'DotPatterns':
         df.replace('cue_AX', 'cue', inplace=True)
         df.replace('cue_BX', 'cue', inplace=True)
@@ -359,8 +359,8 @@ def post_process(df, paradigm_id):
     if paradigm_id == 'Catell':
         pass
     if paradigm_id == 'RewProc':
-        df.drop(df[df.trial_type == 'prefix'].index, 0, inplace=True)
-        df.drop(df[df.trial_type == 'postfix'].index, 0, inplace=True)
+        df.drop(df[df.trial_type == 'prefix'].index, axis=0, inplace=True)
+        df.drop(df[df.trial_type == 'postfix'].index, axis=0, inplace=True)
         df.replace('out_+10', 'plus_10', inplace=True)
         df.replace('out_+20', 'plus_20', inplace=True)
         df.replace('out_-10', 'minus_10', inplace=True)
@@ -382,10 +382,10 @@ def post_process(df, paradigm_id):
         df4 = df.copy()
         df4 = df4[df.trial_type.isin(stay)]
         df4.trial_type = 'stay'
-        df.drop(df[df.trial_type.isin(resp)].index, 0, inplace=True)
+        df.drop(df[df.trial_type.isin(resp)].index, axis=0, inplace=True)
         df = concat([df, df1, df2, df3, df4], axis=0, ignore_index=True)
     if paradigm_id == 'NARPS':
-        df.drop(df[df.trial_type == 'fix'].index, 0, inplace=True)
+        df.drop(df[df.trial_type == 'fix'].index, axis=0, inplace=True)
         stim = [tt for tt in df.trial_type.unique() if 'stim' in tt]
         resp = [tt for tt in df.trial_type.unique() if 'stim' not in tt]
         df1 = df.copy()
