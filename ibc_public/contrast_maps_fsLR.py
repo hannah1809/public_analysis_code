@@ -1,3 +1,9 @@
+"""
+My script to generate first-level contrast maps in fsLR space for IBC dataset subjects.
+Taken from the the official IBC analysis code (Pinho et al., 2018).
+Instead of giftis space, I use fsLR (ciftis) here. Thus, some functions had to be adapted.
+"""
+
 import sys
 import os
 import glob
