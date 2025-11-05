@@ -25,8 +25,7 @@ import glob
 import nibabel as nib
 import numpy as np
 
-from ibc_public.utils_pipeline import first_level, fixed_effects_analysis
-from ibc_public.fslr_ffx_fallback import do_ffx_dscalar
+from ibc_public.utils_pipeline import first_level
 
 # -------------------
 # Configurable roots
@@ -43,14 +42,10 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 subject = sys.argv[1]
-merge_dirs = True
-if len(sys.argv) > 2 and sys.argv[2] == '--no-merge':
-    merge_dirs = False
 
 subject_dir = os.path.join(BASE_DIR, f'sub-{subject}')
 session_dirs = sorted(glob.glob(os.path.join(subject_dir, 'ses-*')))
 
-processed_groups = []
 processed_runs = []
 skipped = []
 
@@ -80,31 +75,15 @@ def cifti_tr_and_scans(img):
     return tr, n_scans
 
 def load_and_align_motion(motion_path, target_len):
-    """Load motion regressors and align/pad/trim to target length."""
+    """Load motion regressors and require exact match to target length."""
     try:
         motion = np.loadtxt(motion_path)
         if motion.ndim == 1:
             if motion.size % 6 == 0:
                 motion = motion.reshape(-1, 6)
             else:
-                motion = motion.reshape(-1, 1)
-        diff = motion.shape[0] - target_len
-        if diff == 0:
-            pass
-        elif abs(diff) == 1:
-            # allow off-by-one, pad or trim
-            if diff == 1:
-                motion = motion[-target_len:, :]
-            else:
-                motion = np.pad(motion, ((1, 0), (0, 0)), mode='constant', constant_values=0.0)
-        elif abs(diff) <= 5:
-            # tolerate small mismatches (e.g., missing initial discarded volumes)
-            if diff > 0:
-                motion = motion[diff:, :]
-            else:
-                motion = np.pad(motion, ((abs(diff), 0), (0, 0)), mode='constant', constant_values=0.0)
-            print(f"Adjusted motion length: original {motion.shape[0]-diff} -> {motion.shape[0]} (target {target_len})")
-        else:
+                return None, f"motion_shape_invalid_1D_{motion.size}"
+        if motion.shape[0] != target_len:
             return None, f"motion_len_mismatch_{motion.shape[0]}_{target_len}"
         return motion.astype(np.float32), None
     except Exception as e:
@@ -148,8 +127,12 @@ for session_dir in session_dirs:
         print(f"No functional files found for sub-{subject} {session}")
         continue
 
-    # Group runs by (task, run) so that ap/pa for the same run can be merged
-    groups = {}  # key: (task, run) -> list of record dicts for ap/pa
+    # Prepare common paths
+    anat_path = os.path.join(session_dir, 'anat', f'sub-{subject}_{session}_T1w.nii.gz')
+    output_dir_base = os.path.join(OUTPUT_BASE, f'sub-{subject}', session)
+    os.makedirs(output_dir_base, exist_ok=True)
+
+    # Process each dtseries independently (no AP/PA merging)
     for func_path in func_files:
         fname = os.path.basename(func_path)
         task, direction, run = parse_fname_bits(fname)
@@ -166,18 +149,17 @@ for session_dir in session_dirs:
         # Build motion and onset filenames
         if run is not None:
             motion_fname = f'sub-{subject}_{session}_task-{task}_dir-{direction}_run-{run}_motion.txt'
-            # Prefer BIDS-standard events name (no dir), but try a few variants
             onset_fname_candidates = [
-                f'sub-{subject}_{session}_task-{task}_run-{run}_events.tsv',                       # BIDS-standard
-                f'sub-{subject}_{session}_task-{task}_dir-{direction}_run-{run}_events.tsv',        # legacy with dir
-                f'sub-{subject}_{session}_task-{task}_acq-{direction}_run-{run}_events.tsv',        # occasional variant
+                f'sub-{subject}_{session}_task-{task}_run-{run}_events.tsv',
+                f'sub-{subject}_{session}_task-{task}_dir-{direction}_run-{run}_events.tsv',
+                f'sub-{subject}_{session}_task-{task}_acq-{direction}_run-{run}_events.tsv',
             ]
             session_id = f'task-{task}_run-{run}_dir-{direction}'
         else:
             motion_fname = f'sub-{subject}_{session}_task-{task}_dir-{direction}_motion.txt'
             onset_fname_candidates = [
-                f'sub-{subject}_{session}_task-{task}_events.tsv',                                  # BIDS-standard
-                f'sub-{subject}_{session}_task-{task}_dir-{direction}_events.tsv',                  # legacy with dir
+                f'sub-{subject}_{session}_task-{task}_events.tsv',
+                f'sub-{subject}_{session}_task-{task}_dir-{direction}_events.tsv',
             ]
             session_id = f'task-{task}_dir-{direction}'
 
@@ -205,6 +187,19 @@ for session_dir in session_dirs:
             skipped.append((session, task, direction, run, err))
             continue
 
+        # Quick sanity check on events vs scan length
+        try:
+            import pandas as pd, numpy as np
+            df_ev = pd.read_csv(onset_path, sep="\t")
+            ev_end = float(np.nanmax(df_ev["onset"].to_numpy(float) + df_ev.get("duration", 0.0)))
+            scan_end = n_scans * tr
+            if ev_end > scan_end + 1e-6:
+                print(f"Warning: events end ({ev_end:.2f}s) exceeds scan window ({scan_end:.2f}s) by {(ev_end-scan_end):.2f}s")
+            elif scan_end - ev_end > 2*tr:
+                print(f"Note: events end ({ev_end:.2f}s) is {(scan_end-ev_end):.2f}s (~{int((scan_end-ev_end)/tr)} TR) before scan end")
+        except Exception as _e:
+            pass
+
         rec = {
             'session_id': session_id,
             'func_path': func_path,
@@ -213,68 +208,24 @@ for session_dir in session_dirs:
             'direction': direction,
             'tr': tr
         }
-        key = (task, run)
-        groups.setdefault(key, []).append(rec)
-
-    # Prepare common paths
-    anat_path = os.path.join(session_dir, 'anat', f'sub-{subject}_{session}_T1w.nii.gz')
-    output_dir_base = os.path.join(OUTPUT_BASE, f'sub-{subject}', session)
-    os.makedirs(output_dir_base, exist_ok=True)
-
-    # For each (task, run) group, either merge AP/PA or process single direction
-    for (task, run), records in groups.items():
-        # Sort records so ap then pa if present (for reproducibility)
-        records = sorted(records, key=lambda r: r['direction'])
-        run_tag = f"run-{run}_" if run is not None else ""
-        label = f"{session}_{task}_{run_tag}"
 
         # Default: enable compcorr except if you're processing mathlang
         compcorr_flag = True
         if isinstance(task, str) and task.lower().startswith('mathlang'):
             compcorr_flag = False
 
-        if merge_dirs and len(records) >= 2:
-            # If both directions exist, pass them together, then fixed-effects
-            dirs = {r['direction'] for r in records}
-            if 'ap' in dirs and 'pa' in dirs:
-                print(f"Merging AP/PA for {label} (n={len(records)}).")
-                subject_dic = build_subject_dict(records, output_dir_base, anat_path)
-                try:
-                    first_level(subject_dic, mesh='fsLR', compcorr=compcorr_flag)
-                    fixed_effects_analysis(subject_dic, mesh='fsLR')  # produces dir-ffx
-                    processed_groups.append((session, task, run, 'ap+pa'))
-                except Exception as e:
-                    print(f"FFX run failed for {label}: {e}")
-                    skipped.append((session, task, 'ap+pa', run, "first_level_or_ffx_exception"))
-                    continue
-            else:
-                # Only one direction present, fall back to single-run processing
-                print(f"Only one direction present for {label}; processing single run.")
-                for r in records:
-                    single_dic = build_subject_dict([r], output_dir_base, anat_path)
-                    try:
-                        first_level(single_dic, mesh='fsLR', compcorr=compcorr_flag)
-                        processed_runs.append((session, task, run, r['direction']))
-                    except Exception as e:
-                        print(f"Run failed for {label}{r['direction']}: {e}")
-                        skipped.append((session, task, r['direction'], run, "first_level_exception"))
-                        continue
-        else:
-            # Merging disabled or not enough directions: process each direction independently
-            for r in records:
-                print(f"Processing single direction for {label}{r['direction']}.")
-                single_dic = build_subject_dict([r], output_dir_base, anat_path)
-                try:
-                    first_level(single_dic, mesh='fsLR', compcorr=compcorr_flag)
-                    processed_runs.append((session, task, run, r['direction']))
-                except Exception as e:
-                    print(f"Run failed for {label}{r['direction']}: {e}")
-                    skipped.append((session, task, r['direction'], run, "first_level_exception"))
-                    continue
+        print(f"Processing single direction for {session}_{task}_{('run-'+run+'_') if run is not None else ''}{direction}.")
+        single_dic = build_subject_dict([rec], output_dir_base, anat_path)
+        try:
+            first_level(single_dic, mesh='fsLR', compcorr=compcorr_flag)
+            processed_runs.append((session, task, run, direction))
+        except Exception as e:
+            print(f"Run failed for {session}_{task}_{('run-'+run+'_') if run is not None else ''}{direction}: {e}")
+            skipped.append((session, task, direction, run, "first_level_exception"))
+            continue
 
 # Summary
 print(f"\nSubject {subject} summary:")
-print(f"  Groups merged (AP+PA): {len(processed_groups)}")
 print(f"  Single-direction runs: {len(processed_runs)}")
 print(f"  Skipped               : {len(skipped)}")
 if skipped:

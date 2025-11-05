@@ -17,7 +17,7 @@ container=/home/rglz/containers/gfae.sif
 
 #SUBJECTS_FILE=/ptmp/hmueller2/Downloads/subjects_resting.txt
 #subject=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" $SUBJECTS_FILE)
-subject="06"
+subject="15"
 
 echo "---- Starting contrast map calculation for subject $subject ----"
 echo "---- Start time: $(date) ----"
