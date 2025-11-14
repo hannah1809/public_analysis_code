@@ -75,11 +75,13 @@ for session_dir in session_dirs:
         # Motion file path
         motion_path = os.path.join(session_dir, 'postfmriprep', 'regressors', motion_fname)
         if not os.path.exists(motion_path):
+            print(f"Motion file not found: {motion_path}")
             motion_path = None
 
         # Onset/events file path
         onset_path = os.path.join('/ptmp/hmueller2/Downloads/ibc_raw', f'sub-{subject}', session, 'func', onset_fname)
         if not os.path.exists(onset_path):
+            print(f"Events file not found: {onset_path}")
             onset_path = None
 
         if not onset_path or not motion_path:
